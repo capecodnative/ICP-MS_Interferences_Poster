@@ -49,12 +49,17 @@ AUTO_GROW_PAGE = True
 MIN_COL_WIDTH = 0.2 * inch
 MIN_ROW_HEIGHT = 0.19 * inch
 MARGIN = 0.08 * inch       # small edge margin; page is fit tightly to title/key/table
+PRINT_PADDING_X = 0.0 * inch  # extra blank left/right border for printing
+PRINT_PADDING_Y = 0.0 * inch  # extra blank top/bottom border for printing
 MIN_CELL_FONT = 2.4
 MAX_CELL_FONT = 4.8
 HEADER_FONT = 8.5
-TITLE_FONT = 20
+TITLE_FONT = 48
 GRID_LINE_WIDTH = 0.12
 SHOW_EMPTY_GRID = False
+SHOW_EMPTY_CELL_LABELS = True
+EMPTY_CELL_LABEL_FONT = 4
+EMPTY_CELL_LABEL_COLOR = "#C8C8C8"
 ADD_LEGEND = True
 FIT_PAGE_TO_CONTENT = True    # trim whitespace by sizing PDF exactly around rendered content
 PRUNE_EMPTY_ROWS_AND_COLUMNS = True
@@ -62,16 +67,23 @@ TWO_COLUMN_ENTRY_THRESHOLD = 6
 CELL_TEXT_PAD = 1.5
 MAX_AUTO_COL_WIDTH = 0.90 * inch
 MAX_AUTO_ROW_HEIGHT = 0.95 * inch
-CITATIONS_TEXT = "Citations: add citations here"
-CITATIONS_BOX_WIDTH = 2.7 * inch
+CITATIONS_TEXT = (
+    "Poster creation script by Dan Ohnemus (dan@uga.edu), code available at https://github.com/capecodnative/ICP-MS_Interferences_Poster<br/>"
+    "Isotopic abundances compiled by: 'CIAAW. Isotopic compositions of the elements 2024.' Available online at www.ciaaw.org.<br/>"
+    "Interferences compiled by (and original references indexed in): 'A searchable/filterable database of elemental, doubly charged, and polyatomic ions that can cause spectral overlaps in inductively coupled plasma-mass spectrometry' (2021), <i>Spectrochim. Acta B</i>, Madeleine C. Lomax-Vogt, Fang Liu, and John W. Olesik"
+)
+CITATIONS_BOX_WIDTH = 18 * inch
+CITATIONS_MAX_WIDTH_FRACTION = 0.75
+LEGEND_MIN_WIDTH = 1.8 * inch
+PAGE_HEIGHT_SAFETY_PAD = 0.35 * inch
 
 # Optional isotope-abundance lookup CSV. Values in the CSV are fractions; the poster displays percent.
-DEFAULT_ABUNDANCE_CSV = "IsotopeAbundances.csv"
+DEFAULT_ABUNDANCE_CSV = "IsotopeAbundances_CIAAWdotOrg_2024.csv"
 ABUNDANCE_SYMBOL_COL = "Symbol"
 ABUNDANCE_MASS_COL = "M"
 ABUNDANCE_VALUE_COL = "Mean Range Abun"
 ABUNDANCE_HEADER = "Rel.<br/>Abund.<br/>(%)"
-ABUNDANCE_FORMAT = ".6g"
+ABUNDANCE_FORMAT = ".4g"
 
 # Ion-type colors from colortypes.xlsx. RGB values are 0-1, as provided.
 # Keys are normalized by stripping whitespace and converting to lowercase.
@@ -282,6 +294,14 @@ def abundance_for_xkey(xk: XKey, abundance_lookup: Dict[Tuple[str, int], str]) -
     return abundance_lookup.get((xk.element, mass), "")
 
 
+def estimate_markup_lines(markup: str, box_width: float, font_size: float) -> int:
+    """Estimate wrapped lines for simple ReportLab paragraph markup."""
+    text = re.sub(r"<br\s*/?>", "\n", markup)
+    text = re.sub(r"<[^>]+>", "", text)
+    chars_per_line = max(1, int(box_width / max(font_size * 0.43, 1)))
+    return sum(max(1, math.ceil(len(line) / chars_per_line)) for line in text.splitlines())
+
+
 def build_matrix(df: pd.DataFrame) -> Tuple[List[XKey], List[str], Dict[Tuple[str, XKey], List[Tuple[str, str]]]]:
     elems = set(element_range(FIRST_ELEMENT, LAST_ELEMENT))
     df = df.copy()
@@ -355,6 +375,11 @@ def make_cell_flowable(items: List[Tuple[str, str]], style: ParagraphStyle, col_
         ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
     ]))
     return nested
+
+
+def make_empty_cell_label(xk: XKey, interfering_element: str, style: ParagraphStyle) -> Paragraph:
+    label = f"{format_isotope_label(xk.element, xk.mz)} / {xml_escape(interfering_element)}"
+    return Paragraph(label, style)
 
 
 def item_plain_len(ion: str) -> int:
@@ -456,9 +481,8 @@ def build_pdf(df: pd.DataFrame, out_pdf: str, abundance_csv: str | None = None) 
     abundance_col_w = 0.68 * inch
     row_header_w = isotope_header_w + abundance_col_w
     col_header_h = 0.46 * inch
-    citation_lines = max(1, math.ceil(len(clean_text(CITATIONS_TEXT)) / 55))
-    key_block_h = max(0.30 * inch, citation_lines * 0.13 * inch)
-    title_block_h = 0.50 * inch if not ADD_LEGEND else 0.54 * inch + key_block_h
+    title_h = (TITLE_FONT + 3) / 72 * inch
+    title_block_h = title_h + 0.18 * inch
     n_cols, n_rows = len(ykeys), len(xkeys)
 
     # Estimate a compact font size from the base page, then resize rows/columns from actual populated content.
@@ -473,15 +497,27 @@ def build_pdf(df: pd.DataFrame, out_pdf: str, abundance_csv: str | None = None) 
 
     matrix_w = row_header_w + sum(col_widths_data)
     matrix_h = col_header_h + sum(row_heights_data)
+    max_citation_w = max(1.2 * inch, matrix_w - LEGEND_MIN_WIDTH)
+    preferred_citation_w = min(CITATIONS_BOX_WIDTH, matrix_w * CITATIONS_MAX_WIDTH_FRACTION)
+    citation_w = min(max_citation_w, max(1.2 * inch, preferred_citation_w))
+    legend_w = matrix_w - citation_w
+    citation_lines = estimate_markup_lines(CITATIONS_TEXT, citation_w, 7.5)
+    key_block_h = max(0.30 * inch, citation_lines * 0.13 * inch)
+    if ADD_LEGEND:
+        title_block_h += 0.03 * inch + key_block_h + 0.05 * inch
+    title_block_h += PAGE_HEIGHT_SAFETY_PAD
+
+    page_margin_x = MARGIN + PRINT_PADDING_X
+    page_margin_y = MARGIN + PRINT_PADDING_Y
 
     if FIT_PAGE_TO_CONTENT:
         # Tight page: no unused A0 whitespace. The PDF page is just large enough for the
-        # title, color key, and compacted table plus the small MARGIN above.
-        page_w = 2 * MARGIN + matrix_w
-        page_h = 2 * MARGIN + title_block_h + matrix_h
+        # title, color key, and compacted table plus the requested margins/padding.
+        page_w = 2 * page_margin_x + matrix_w
+        page_h = 2 * page_margin_y + title_block_h + matrix_h
     elif AUTO_GROW_PAGE:
-        page_w = max(base_w, 2 * MARGIN + matrix_w)
-        page_h = max(base_h, 2 * MARGIN + title_block_h + matrix_h)
+        page_w = max(base_w, 2 * page_margin_x + matrix_w)
+        page_h = max(base_h, 2 * page_margin_y + title_block_h + matrix_h)
     else:
         page_w, page_h = base_w, base_h
 
@@ -490,10 +526,18 @@ def build_pdf(df: pd.DataFrame, out_pdf: str, abundance_csv: str | None = None) 
     hdr_style = ParagraphStyle("Header", parent=styles["Normal"], fontSize=HEADER_FONT, leading=HEADER_FONT + 2, alignment=TA_CENTER)
     row_hdr_style = ParagraphStyle("RowHeader", parent=hdr_style, fontSize=HEADER_FONT + 1.5, leading=HEADER_FONT + 3)
     cell_style = ParagraphStyle("Cell", parent=styles["Normal"], fontSize=cell_font, leading=cell_font + 0.9, alignment=TA_LEFT)
+    empty_cell_style = ParagraphStyle(
+        "EmptyCell",
+        parent=styles["Normal"],
+        fontSize=EMPTY_CELL_LABEL_FONT,
+        leading=EMPTY_CELL_LABEL_FONT + 0.4,
+        alignment=TA_CENTER,
+        textColor=colors.HexColor(EMPTY_CELL_LABEL_COLOR),
+    )
     note_style = ParagraphStyle("Note", parent=styles["Normal"], fontSize=7.5, leading=9, alignment=TA_LEFT)
     citation_style = ParagraphStyle("Citation", parent=note_style, alignment=TA_RIGHT)
 
-    title = Paragraph("ICP-MS Interference/Overlap Matrix", title_style)
+    title = Paragraph("A Visual Guide to ICP-MS Spectral Overlaps and Interferences", title_style)
 
     key_tbl = None
     if ADD_LEGEND:
@@ -505,12 +549,10 @@ def build_pdf(df: pd.DataFrame, out_pdf: str, abundance_csv: str | None = None) 
             label = ", ".join(type_names)
             legend_bits.append(f'<font color="{hex_color}">■</font> {xml_escape(label)}')
         legend_para = Paragraph("Ion-type colors: " + "; ".join(legend_bits), note_style)
-        citation_para = Paragraph(xml_escape(CITATIONS_TEXT), citation_style)
-        citation_w = min(CITATIONS_BOX_WIDTH, max(1.2 * inch, matrix_w * 0.40))
-        legend_w = max(1.2 * inch, matrix_w - citation_w)
-        key_tbl = Table([[legend_para, citation_para]], colWidths=[legend_w, citation_w])
+        citation_para = Paragraph(CITATIONS_TEXT, citation_style)
+        key_tbl = Table([[legend_para, citation_para]], colWidths=[legend_w, citation_w], rowHeights=[key_block_h])
         key_tbl.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
             ("LEFTPADDING", (0, 0), (-1, -1), 0),
             ("RIGHTPADDING", (0, 0), (-1, -1), 0),
             ("TOPPADDING", (0, 0), (-1, -1), 0),
@@ -532,7 +574,13 @@ def build_pdf(df: pd.DataFrame, out_pdf: str, abundance_csv: str | None = None) 
             Paragraph(xml_escape(abundance_for_xkey(xk, abundance_lookup)), row_hdr_style),
         ]
         for j, y in enumerate(ykeys):
-            row.append(make_cell_flowable(matrix.get((y, xk), []), cell_style, col_widths_data[j]))
+            items = matrix.get((y, xk), [])
+            if items:
+                row.append(make_cell_flowable(items, cell_style, col_widths_data[j]))
+            elif SHOW_EMPTY_CELL_LABELS:
+                row.append(make_empty_cell_label(xk, y, empty_cell_style))
+            else:
+                row.append("")
         table_data.append(row)
 
     col_widths = [isotope_header_w, abundance_col_w] + col_widths_data
@@ -571,8 +619,8 @@ def build_pdf(df: pd.DataFrame, out_pdf: str, abundance_csv: str | None = None) 
 
     tbl.setStyle(TableStyle(style_cmds))
 
-    doc = SimpleDocTemplate(out_pdf, pagesize=(page_w, page_h), leftMargin=MARGIN, rightMargin=MARGIN,
-                            topMargin=MARGIN, bottomMargin=MARGIN)
+    doc = SimpleDocTemplate(out_pdf, pagesize=(page_w, page_h), leftMargin=page_margin_x, rightMargin=page_margin_x,
+                            topMargin=page_margin_y, bottomMargin=page_margin_y)
     story = [title]
     if key_tbl is not None:
         story += [Spacer(1, 0.03 * inch), key_tbl]
