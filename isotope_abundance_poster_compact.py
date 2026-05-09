@@ -54,7 +54,7 @@ BODY_FONT = "Helvetica"
 BODY_BOLD = "Helvetica-Bold"
 
 DEFAULT_FOOTER = (
-    "Isotopic abundances from: CIAAW. Isotopic compositions of the elements, 2024; "
+    "Isotopic abundances from: CIAAW Isotopic compositions of the elements, 2024; "
     "Available online at www.ciaaw.org\r"
     "For isotopes with a range reported, the mean of the range limits is shown.\n"
     "Poster layout by Dan Ohnemus (dan@uga.edu); code available at "
