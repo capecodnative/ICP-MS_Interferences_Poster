@@ -184,6 +184,10 @@ def load_groups(csv_path: Path) -> list[ElementGroup]:
     groups.sort(key=lambda x: x.z)
     return groups
 
+def has_no_stable_isotopes(group: ElementGroup) -> bool:
+    """Return True when the source has no standard natural-abundance values."""
+    return not group.isotopes or all(iso.mean_frac is None for iso in group.isotopes)
+
 
 # -----------------------------------------------------------------------------
 # Page / layout helpers
@@ -203,7 +207,8 @@ def card_height(group: ElementGroup, scale: float) -> float:
     pad_b = 2.5 * scale
     header_h = 11.2 * scale
     line_h = 5.4 * scale
-    return pad_t + header_h + len(group.isotopes) * line_h + pad_b
+    row_count = 1 if has_no_stable_isotopes(group) else len(group.isotopes)
+    return pad_t + header_h + row_count * line_h + pad_b
 
 
 def split_into_ordered_columns(
@@ -410,6 +415,8 @@ def draw_right_aligned_segments(
 
 
 def element_text_color(group: ElementGroup):
+    if has_no_stable_isotopes(group):
+        return PALETTE["muted"]
     n = len(group.isotopes)
     if n == 1:
         return PALETTE["mono"]
@@ -522,14 +529,19 @@ def draw_element_card(
     dot_x = x + dot_x_rel
 
     # Draw rows.
-    for i, (iso, value) in enumerate(zip(group.isotopes, values)):
-        iy = row_y0 - i * line_h
+    if has_no_stable_isotopes(group):
+        c.setFillColor(PALETTE["muted"])
+        c.setFont(BODY_FONT, value_font)
+        c.drawCentredString(x + w / 2, row_y0, "None")
+    else:
+        for i, (iso, value) in enumerate(zip(group.isotopes, values)):
+            iy = row_y0 - i * line_h
 
-        c.setFillColor(text_color)
-        c.setFont(BODY_FONT, mass_font)
-        c.drawRightString(mass_right_x, iy, str(iso.mass))
+            c.setFillColor(text_color)
+            c.setFont(BODY_FONT, mass_font)
+            c.drawRightString(mass_right_x, iy, str(iso.mass))
 
-        draw_decimal_aligned_value(c, value, dot_x, iy, value_font, text_color)
+            draw_decimal_aligned_value(c, value, dot_x, iy, value_font, text_color)
 
     return h
 
